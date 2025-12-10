@@ -634,6 +634,7 @@ fn apply_query_limit(sql: &str, limit: i32) -> String {
         if sql_upper.contains("GET_QUERY_PROFILE")
             || sql_upper.contains("SHOW_PROFILE")
             || sql_upper.contains("EXPLAIN")
+            || sql_upper.contains("UNION")
         {
             return trimmed.to_string();
         }
@@ -643,5 +644,71 @@ fn apply_query_limit(sql: &str, limit: i32) -> String {
         format!("{} LIMIT {}", sql_without_semicolon, limit)
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_apply_query_limit_simple_select() {
+        let sql = "SELECT * FROM table";
+        let result = apply_query_limit(sql, 100);
+        assert_eq!(result, "SELECT * FROM table LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_already_has_limit() {
+        let sql = "SELECT * FROM table LIMIT 50";
+        let result = apply_query_limit(sql, 100);
+        assert_eq!(result, "SELECT * FROM table LIMIT 50");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union_all() {
+        let sql = "SELECT * FROM table1 UNION ALL SELECT * FROM table2";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries
+        assert_eq!(result, "SELECT * FROM table1 UNION ALL SELECT * FROM table2");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union() {
+        let sql = "SELECT * FROM table1 UNION SELECT * FROM table2";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries
+        assert_eq!(result, "SELECT * FROM table1 UNION SELECT * FROM table2");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union_lowercase() {
+        let sql = "select * from table1 union all select * from table2";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries (case insensitive)
+        assert_eq!(result, "select * from table1 union all select * from table2");
+    }
+
+    #[test]
+    fn test_apply_query_limit_explain() {
+        let sql = "SELECT * FROM table WHERE col CONTAINS 'EXPLAIN'";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for queries with EXPLAIN
+        assert_eq!(result, "SELECT * FROM table WHERE col CONTAINS 'EXPLAIN'");
+    }
+
+    #[test]
+    fn test_apply_query_limit_with_semicolon() {
+        let sql = "SELECT * FROM table;";
+        let result = apply_query_limit(sql, 100);
+        assert_eq!(result, "SELECT * FROM table LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_non_select() {
+        let sql = "INSERT INTO table VALUES (1, 2, 3)";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for non-SELECT queries
+        assert_eq!(result, "INSERT INTO table VALUES (1, 2, 3)");
     }
 }
