@@ -633,7 +633,8 @@ fn apply_query_limit(sql: &str, limit: i32) -> String {
     if sql_upper.starts_with("SELECT") {
         if sql_upper.contains("GET_QUERY_PROFILE")
             || sql_upper.contains("SHOW_PROFILE")
-            || sql_upper.contains("EXPLAIN")
+            || sql_upper.starts_with("EXPLAIN")
+            || contains_union_keyword(&sql_upper)
         {
             return trimmed.to_string();
         }
@@ -643,5 +644,140 @@ fn apply_query_limit(sql: &str, limit: i32) -> String {
         format!("{} LIMIT {}", sql_without_semicolon, limit)
     } else {
         trimmed.to_string()
+    }
+}
+
+/// Check if SQL contains UNION keyword outside of string literals
+/// This is a simple check that looks for UNION as a standalone word
+fn contains_union_keyword(sql_upper: &str) -> bool {
+    // Remove string literals (both single and double quotes) to avoid false positives
+    let mut cleaned = String::with_capacity(sql_upper.len());
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    
+    for ch in sql_upper.chars() {
+        match ch {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                cleaned.push(' '); // Replace string content with space
+            },
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                cleaned.push(' '); // Replace string content with space
+            },
+            _ if in_single_quote || in_double_quote => {
+                cleaned.push(' '); // Replace string content with space
+            },
+            _ => {
+                cleaned.push(ch);
+            },
+        }
+    }
+    
+    // Look for UNION as a word boundary (preceded and followed by whitespace or end of string)
+    // This prevents matching 'UNION' in column names like 'union_column'
+    cleaned.split_whitespace().any(|word| word == "UNION")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_apply_query_limit_simple_select() {
+        let sql = "SELECT * FROM table";
+        let result = apply_query_limit(sql, 100);
+        assert_eq!(result, "SELECT * FROM table LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_already_has_limit() {
+        let sql = "SELECT * FROM table LIMIT 50";
+        let result = apply_query_limit(sql, 100);
+        assert_eq!(result, "SELECT * FROM table LIMIT 50");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union_all() {
+        let sql = "SELECT * FROM table1 UNION ALL SELECT * FROM table2";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries
+        assert_eq!(result, "SELECT * FROM table1 UNION ALL SELECT * FROM table2");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union() {
+        let sql = "SELECT * FROM table1 UNION SELECT * FROM table2";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries
+        assert_eq!(result, "SELECT * FROM table1 UNION SELECT * FROM table2");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union_lowercase() {
+        let sql = "select * from table1 union all select * from table2";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries (case insensitive)
+        assert_eq!(result, "select * from table1 union all select * from table2");
+    }
+
+    #[test]
+    fn test_apply_query_limit_explain_command() {
+        let sql = "EXPLAIN SELECT * FROM table";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for EXPLAIN commands
+        assert_eq!(result, "EXPLAIN SELECT * FROM table");
+    }
+
+    #[test]
+    fn test_apply_query_limit_with_explain_in_string() {
+        let sql = "SELECT * FROM table WHERE col CONTAINS 'EXPLAIN'";
+        let result = apply_query_limit(sql, 100);
+        // Should add LIMIT because EXPLAIN is in a string literal, not a command
+        assert_eq!(result, "SELECT * FROM table WHERE col CONTAINS 'EXPLAIN' LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_with_semicolon() {
+        let sql = "SELECT * FROM table;";
+        let result = apply_query_limit(sql, 100);
+        assert_eq!(result, "SELECT * FROM table LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_non_select() {
+        let sql = "INSERT INTO table VALUES (1, 2, 3)";
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for non-SELECT queries
+        assert_eq!(result, "INSERT INTO table VALUES (1, 2, 3)");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union_in_string_literal() {
+        let sql = "SELECT 'UNION' FROM table";
+        let result = apply_query_limit(sql, 100);
+        // Should add LIMIT because UNION is in a string literal
+        assert_eq!(result, "SELECT 'UNION' FROM table LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_union_column_name() {
+        let sql = "SELECT union_column FROM table";
+        let result = apply_query_limit(sql, 100);
+        // Should add LIMIT because 'union_column' is a column name, not the UNION keyword
+        assert_eq!(result, "SELECT union_column FROM table LIMIT 100");
+    }
+
+    #[test]
+    fn test_apply_query_limit_complex_union() {
+        let sql = r#"
+            SELECT * FROM table1 WHERE col = 'test'
+            UNION ALL
+            SELECT * FROM table2 WHERE col = 'test'
+        "#;
+        let result = apply_query_limit(sql, 100);
+        // Should NOT add LIMIT for UNION queries
+        assert!(result.contains("UNION ALL"));
+        assert!(!result.contains("LIMIT"));
     }
 }
